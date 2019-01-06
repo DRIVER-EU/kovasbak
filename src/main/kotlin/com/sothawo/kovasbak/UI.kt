@@ -23,18 +23,58 @@ class ChatUI : UI(), KafkaConnectorListener {
     lateinit var user: String
     val chatDisplay = ChatDisplay()
     val userLabel = Label()
+    val chatRooms = mutableMapOf<String, ChatRoom>()
 
     @Autowired
     lateinit var kafkaConnector: KafkaConnector
 
     override fun init(vaadinRequest: VaadinRequest?) {
+        val chatRoomsWithOrWithoutDefault = kafkaConnector.topics.map { it to ChatRoom(it) }.toMap()
+        val nullableDefaultChatroom = chatRoomsWithOrWithoutDefault[kafkaConnector.defaultTopic]
+        val defaultChatRoom: ChatRoom
+        if (nullableDefaultChatroom == null) {
+            defaultChatRoom = ChatRoom(kafkaConnector.defaultTopic)
+            chatRooms[kafkaConnector.defaultTopic] = defaultChatRoom
+        } else {
+            defaultChatRoom = nullableDefaultChatroom
+        }
+
+        chatRooms.putAll(chatRoomsWithOrWithoutDefault)
+
+        val chatRoomsComboBox = ComboBox<ChatRoom>()
+        chatRoomsComboBox.isEmptySelectionAllowed = false
+        chatRoomsComboBox.isTextInputAllowed = false
+        chatRoomsComboBox.caption = "Room: "
+        chatRoomsComboBox.setItems(chatRooms.values)
+        chatRoomsComboBox.setItemCaptionGenerator(ChatRoom::name)
+        chatRoomsComboBox.setSelectedItem(defaultChatRoom)
+
+        chatRoomsComboBox.addValueChangeListener { event ->
+            if (!event.source.isEmpty) {
+                val selectedChatroom = event.value
+                chatDisplay.setRoom(selectedChatroom)
+            }
+
+        }
+
+        chatDisplay.setRoom(defaultChatRoom)
+
         kafkaConnector.addListener(this)
         content = VerticalLayout().apply {
             setSizeFull()
-            addComponents(chatDisplay, createInputs())
+            addComponents(chatRoomsComboBox, chatDisplay, createInputs())
             setExpandRatio(chatDisplay, 1F)
         }
-        askForUserName()
+
+        val kafkaUsername = kafkaConnector.kafkaUsername
+        if (kafkaUsername.isNullOrEmpty()) {
+            user = askForUserName()
+        } else {
+            user = kafkaUsername!!
+            log.info("Username set to Kafka client certificate's subject CN: $user")
+        }
+
+        userLabel.value = kafkaUsername
     }
 
     override fun detach() {
@@ -50,8 +90,11 @@ class ChatUI : UI(), KafkaConnectorListener {
             val button = Button("Send").apply {
                 setClickShortcut(ShortcutAction.KeyCode.ENTER)
                 addClickListener {
-                    kafkaConnector.send(user, messageField.value)
-                    messageField.apply { clear(); focus() }
+                    chatDisplay.chatRoom?.let {
+                        val roomName = it.name
+                        kafkaConnector.send(roomName, user, messageField.value)
+                        messageField.apply { clear(); focus() }
+                    }
                 }
             }
             addComponents(userLabel, messageField, button)
@@ -60,7 +103,8 @@ class ChatUI : UI(), KafkaConnectorListener {
         }
     }
 
-    private fun askForUserName() {
+    private fun askForUserName(): String {
+        var inputUser: String? = null
         addWindow(Window("your user:").apply {
             isModal = true
             isClosable = false
@@ -71,21 +115,34 @@ class ChatUI : UI(), KafkaConnectorListener {
                 addComponent(Button("OK").apply {
                     setClickShortcut(ShortcutAction.KeyCode.ENTER)
                     addClickListener {
-                        user = nameField.value
-                        if (!user.isNullOrEmpty()) {
+                        inputUser = nameField.value
+                        if (!inputUser.isNullOrEmpty()) {
                             close()
-                            userLabel.value = user
-                            log.info("user entered: $user")
+                            log.info("user entered: $inputUser")
                         }
                     }
                 })
             }
             center()
         })
+
+        if (inputUser == null) {
+            throw RuntimeException("User entered blank or no username")
+        }
+
+        return inputUser!!
     }
 
-    override fun chatMessage(user: String, message: String) {
-        access { chatDisplay.addMessage(user, message) }
+    override fun chatMessage(topic: String, user: String, message: String) {
+        access {
+            val chatRoom = chatRooms[topic]
+            chatRoom?.let {
+                it.addMessage(user, message)
+                if (chatRoom.name == chatDisplay.chatRoom?.name) {
+                    chatDisplay.syncText()
+                }
+            }
+        }
     }
 
     companion object {
@@ -94,19 +151,36 @@ class ChatUI : UI(), KafkaConnectorListener {
 }
 
 class ChatDisplay : Panel() {
-    val text: Label
+    private val textLabel: Label
+    var chatRoom: ChatRoom? = null
 
     init {
         setSizeFull()
-        text = Label().apply { contentMode = ContentMode.HTML }
-        content = VerticalLayout().apply { addComponent(text) }
+        textLabel = Label().apply { contentMode = ContentMode.HTML }
+        content = VerticalLayout().apply { addComponent(textLabel) }
     }
 
-    fun addMessage(user: String, message: String) {
-        text.value = when {
-            text.value.isNullOrEmpty() -> "<em>$user:</em> $message"
-            else -> text.value + "<br/><em>$user:</em> $message"
-        }
+    fun setRoom(room: ChatRoom) {
+        chatRoom = room
+        caption = room.name
+        syncText()
+    }
+
+    fun syncText() {
+        textLabel.value = chatRoom?.text
         scrollTop = Int.MAX_VALUE
     }
 }
+
+class ChatRoom(roomName: String) {
+    val name: String = roomName
+    var text: String = ""
+
+    fun addMessage(user: String, message: String) {
+        text = when {
+            text.isEmpty() -> "<em>$user:</em> $message"
+            else -> "$text<br/><em>$user:</em> $message"
+        }
+    }
+}
+
