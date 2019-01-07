@@ -42,6 +42,9 @@ class ChatUI : UI(), KafkaConnectorListener {
         chatRooms.putAll(chatRoomsWithOrWithoutDefault)
 
         val chatRoomsComboBox = ComboBox<ChatRoom>()
+        /*
+        isEmptySelectionAllowed not longer supported in Vaadin 10 (only 7 o 8): https://github.com/vaadin/vaadin-combo-box-flow/issues/124
+         */
         chatRoomsComboBox.isEmptySelectionAllowed = false
         chatRoomsComboBox.isTextInputAllowed = false
         chatRoomsComboBox.caption = "Room: "
@@ -67,12 +70,13 @@ class ChatUI : UI(), KafkaConnectorListener {
         }
 
         val kafkaUsername = kafkaConnector.kafkaUsername
-        if (kafkaUsername.isNullOrEmpty()) {
-            user = askForUserName()
-        } else {
-            user = kafkaUsername!!
-            log.info("Username set to Kafka client certificate's subject CN: $user")
-        }
+        user =
+                if (kafkaUsername.isNullOrEmpty()) {
+                    askForUserName()
+                } else {
+                    log.info("Username set to Kafka client certificate's subject CN: $kafkaUsername")
+                    kafkaUsername
+                }
 
         userLabel.value = kafkaUsername
     }
@@ -90,9 +94,8 @@ class ChatUI : UI(), KafkaConnectorListener {
             val button = Button("Send").apply {
                 setClickShortcut(ShortcutAction.KeyCode.ENTER)
                 addClickListener {
-                    chatDisplay.chatRoom?.let {
-                        val roomName = it.name
-                        kafkaConnector.send(roomName, user, messageField.value)
+                    chatDisplay.chatRoom?.let { r ->
+                        kafkaConnector.send(r.name, user, messageField.value)
                         messageField.apply { clear(); focus() }
                     }
                 }

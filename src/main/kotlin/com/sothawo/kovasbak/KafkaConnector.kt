@@ -76,7 +76,7 @@ Set the username to the subject name (CN) from SSL certificate if using one (e.g
     /*
     See Spring Kafka's EnableKafkaIntegrationTests class for examples of spring property injection
      */
-    @KafkaListener(topics = arrayOf("#{'\${chat.rooms:kovasbak-chat}'.split(',')}"))
+    @KafkaListener(topics = arrayOf("#{'\${chat.rooms:kovasbak-chat}'.split(',')}"), group = "\$spring.kafka.consumer.group-id:")
     fun receive(consumerRecord: ConsumerRecord<String?, String?>) {
         val key: String = consumerRecord.key() ?: "???"
         val value: String = consumerRecord.value() ?: "???"
